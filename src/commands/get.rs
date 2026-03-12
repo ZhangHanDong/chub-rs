@@ -107,9 +107,7 @@ pub fn run(
             Ok(fetched) => results.push(fetched),
             Err(e) => {
                 if json {
-                    json_errors.push(
-                        serde_json::json!({"error": e.to_string(), "id": entry.id}),
-                    );
+                    json_errors.push(serde_json::json!({"error": e.to_string(), "id": entry.id}));
                 } else {
                     return Err(e);
                 }
@@ -357,8 +355,10 @@ fn output_to_file(
         } else {
             // File mode: combine all content, write once
             let out = if is_dir {
-                Path::new(output_path)
-                    .join(format!("{}.md", results.first().map_or("output", |r| &r.id)))
+                Path::new(output_path).join(format!(
+                    "{}.md",
+                    results.first().map_or("output", |r| &r.id)
+                ))
             } else {
                 Path::new(output_path).to_path_buf()
             };

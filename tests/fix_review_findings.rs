@@ -330,7 +330,10 @@ fn is_cache_fresh_returns_false_when_registry_json_missing() {
 
     // But do NOT create registry.json
     let reg_path = cache::get_source_registry_path(&chub_dir, source_name);
-    assert!(!reg_path.exists(), "precondition: registry.json must not exist");
+    assert!(
+        !reg_path.exists(),
+        "precondition: registry.json must not exist"
+    );
 
     // is_cache_fresh must return false despite the fresh timestamp
     assert!(
