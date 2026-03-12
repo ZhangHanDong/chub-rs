@@ -185,19 +185,24 @@ fn fetch_and_return(
     full: bool,
     entry_file_name: &str,
 ) -> serde_json::Value {
-    // Determine source_path from config
-    let source_path: Option<std::path::PathBuf> = ctx
-        .source_paths
-        .get(source)
-        .and_then(|p| p.as_ref())
-        .cloned();
+    // Determine source_path and source_url from config
+    let info = ctx.source_info.get(source);
+    let source_path: Option<std::path::PathBuf> = info.and_then(|i| i.path.clone());
+    let source_url: Option<&str> = info.and_then(|i| i.url.as_deref());
 
     let content = if let Some(f) = file {
         // Validate file is in the allowed list
         if let Err(e) = registry::validate_file_path(f, files) {
             return error_result(&format!("{}", e), serde_json::json!({}));
         }
-        match cache::fetch_doc(&ctx.chub_dir, source_path.as_deref(), source, path, f) {
+        match cache::fetch_doc(
+            &ctx.chub_dir,
+            source_path.as_deref(),
+            source_url,
+            source,
+            path,
+            f,
+        ) {
             Ok(c) => c,
             Err(e) => {
                 return error_result(
@@ -207,7 +212,14 @@ fn fetch_and_return(
             }
         }
     } else if full {
-        match cache::fetch_doc_full(&ctx.chub_dir, source_path.as_deref(), source, path, files) {
+        match cache::fetch_doc_full(
+            &ctx.chub_dir,
+            source_path.as_deref(),
+            source_url,
+            source,
+            path,
+            files,
+        ) {
             Ok(all_files) => all_files
                 .iter()
                 .map(|(name, content)| format!("# FILE: {}\n\n{}", name, content))
@@ -224,6 +236,7 @@ fn fetch_and_return(
         match cache::fetch_doc(
             &ctx.chub_dir,
             source_path.as_deref(),
+            source_url,
             source,
             path,
             entry_file_name,

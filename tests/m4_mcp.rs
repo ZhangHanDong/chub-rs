@@ -1,3 +1,4 @@
+use chub_rs::commands::SourceInfo;
 use chub_rs::core::bm25;
 use chub_rs::core::registry::{DocEntry, Language, Registry, SkillEntry, Version};
 use chub_rs::mcp::McpContext;
@@ -96,7 +97,7 @@ fn test_context(tmp: &TempDir) -> McpContext {
         search_index: merged.search_index,
         chub_dir,
         annotations_dir,
-        source_paths: HashMap::from([(source_name.to_string(), None)]),
+        source_info: HashMap::from([(source_name.to_string(), SourceInfo::default())]),
         telemetry_enabled: false,
         feedback_endpoint: "https://example.com/api".to_string(),
         version: "0.1.1".to_string(),

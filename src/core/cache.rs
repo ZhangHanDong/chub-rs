@@ -67,10 +67,12 @@ pub fn write_meta(chub_dir: &Path, source_name: &str, meta: &SourceMeta) -> Resu
 
 // ── Doc fetching (read path) ────────────────────────────────────────
 
-/// Fetch a doc file content. Tries local source path first, then cached data dir.
+/// Fetch a doc file content. Tries local source path first, then cached data dir,
+/// then on-demand CDN fetch if source_url is provided.
 pub fn fetch_doc(
     chub_dir: &Path,
     source_path: Option<&Path>,
+    source_url: Option<&str>,
     source_name: &str,
     doc_path: &str,
     file_name: &str,
@@ -92,6 +94,23 @@ pub fn fetch_doc(
             .map_err(|e| anyhow::anyhow!("Failed to read cached {}: {}", cached.display(), e));
     }
 
+    // 3. Try fetching from remote CDN (on-demand pull)
+    if let Some(base_url) = source_url {
+        let url = format!(
+            "{}/{}/{}",
+            base_url.trim_end_matches('/'),
+            doc_path,
+            file_name
+        );
+        if let Ok(content) = fetch_remote_file(&url) {
+            // Cache locally for future use
+            let cache_dir = data_dir.join(doc_path);
+            let _ = std::fs::create_dir_all(&cache_dir);
+            let _ = std::fs::write(cache_dir.join(file_name), &content);
+            return Ok(content);
+        }
+    }
+
     bail!(
         "Could not find '{}' in '{}'. Run `chub update` to download content.",
         file_name,
@@ -103,13 +122,21 @@ pub fn fetch_doc(
 pub fn fetch_doc_full(
     chub_dir: &Path,
     source_path: Option<&Path>,
+    source_url: Option<&str>,
     source_name: &str,
     doc_path: &str,
     files: &[String],
 ) -> Result<Vec<(String, String)>> {
     let mut result = Vec::new();
     for file in files {
-        let content = fetch_doc(chub_dir, source_path, source_name, doc_path, file)?;
+        let content = fetch_doc(
+            chub_dir,
+            source_path,
+            source_url,
+            source_name,
+            doc_path,
+            file,
+        )?;
         result.push((file.clone(), content));
     }
     Ok(result)
@@ -229,7 +256,12 @@ pub fn clear_cache(chub_dir: &Path) -> Result<()> {
 // ── Registry update ─────────────────────────────────────────────────
 
 /// Check if cache is fresh based on refresh_interval.
+/// Also verifies that the registry.json file actually exists on disk —
+/// a fresh timestamp with a missing file is treated as stale.
 pub fn is_cache_fresh(chub_dir: &Path, source_name: &str, refresh_interval: u64, now: u64) -> bool {
+    if !get_source_registry_path(chub_dir, source_name).exists() {
+        return false;
+    }
     let meta = read_meta(chub_dir, source_name);
     match meta.last_updated {
         Some(last) => now.saturating_sub(last) < refresh_interval,
@@ -279,4 +311,121 @@ pub fn extract_bundle(chub_dir: &Path, source_name: &str, bundle_data: &[u8]) ->
     write_meta(chub_dir, source_name, &meta)?;
 
     Ok(())
+}
+
+// ── On-demand remote fetch ───────────────────────────────────────────
+
+/// Fetch a single file from a remote URL. Used for on-demand doc pull.
+fn fetch_remote_file(url: &str) -> Result<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let resp = client.get(url).send()?.error_for_status()?;
+    Ok(resp.text()?)
+}
+
+// ── Ensure registry (startup bootstrap) ──────────────────────────────
+
+use crate::core::config::Source;
+
+/// Ensure at least one registry is available. If no cached registries exist,
+/// fetches remote registries. If stale, auto-refreshes (best-effort).
+/// This mirrors JS `ensureRegistry()`.
+pub fn ensure_registry(chub_dir: &Path, sources: &[Source], refresh_interval: u64) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Check if ANY source has a registry available
+    let has_any = sources.iter().any(|source| {
+        if let Some(ref local_path) = source.path {
+            local_path.join("registry.json").exists()
+        } else {
+            get_source_registry_path(chub_dir, &source.name).exists()
+        }
+    });
+
+    if has_any {
+        // Auto-refresh stale remote registries (best-effort, ignore errors)
+        for source in sources {
+            if source.path.is_some() {
+                continue;
+            }
+            let url = match &source.url {
+                Some(u) => u,
+                None => continue,
+            };
+            if !is_cache_fresh(chub_dir, &source.name, refresh_interval, now) {
+                let base_url = url.trim_end_matches('/');
+                let _ = fetch_and_save_registry(
+                    chub_dir,
+                    &source.name,
+                    || {
+                        let client = reqwest::blocking::Client::builder()
+                            .timeout(std::time::Duration::from_secs(30))
+                            .build()?;
+                        let reg_resp = client
+                            .get(format!("{}/registry.json", base_url))
+                            .send()?
+                            .error_for_status()?;
+                        let registry_json = reg_resp.text()?;
+                        let idx_json = client
+                            .get(format!("{}/search-index.json", base_url))
+                            .send()
+                            .ok()
+                            .and_then(|r| {
+                                if r.status().is_success() {
+                                    r.text().ok()
+                                } else {
+                                    None
+                                }
+                            });
+                        Ok((registry_json, idx_json))
+                    },
+                    now,
+                );
+            }
+        }
+        return;
+    }
+
+    // No registries at all — must download from remote
+    for source in sources {
+        if source.path.is_some() {
+            continue;
+        }
+        let url = match &source.url {
+            Some(u) => u,
+            None => continue,
+        };
+        let base_url = url.trim_end_matches('/');
+        let _ = fetch_and_save_registry(
+            chub_dir,
+            &source.name,
+            || {
+                let client = reqwest::blocking::Client::builder()
+                    .timeout(std::time::Duration::from_secs(30))
+                    .build()?;
+                let reg_resp = client
+                    .get(format!("{}/registry.json", base_url))
+                    .send()?
+                    .error_for_status()?;
+                let registry_json = reg_resp.text()?;
+                let idx_json = client
+                    .get(format!("{}/search-index.json", base_url))
+                    .send()
+                    .ok()
+                    .and_then(|r| {
+                        if r.status().is_success() {
+                            r.text().ok()
+                        } else {
+                            None
+                        }
+                    });
+                Ok((registry_json, idx_json))
+            },
+            now,
+        );
+    }
 }

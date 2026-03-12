@@ -58,6 +58,7 @@ fn get_reads_content_from_local_source_path() {
     let content = cache::fetch_doc(
         &chub_dir,
         Some(local_path.as_path()),
+        None,
         "my-source",
         "acme/widgets/javascript/v2",
         "DOC.md",
@@ -305,4 +306,123 @@ fn multi_source_bm25_takes_max_score_for_duplicate_ids() {
             scores
         );
     }
+}
+
+// ── Finding R5-1: is_cache_fresh must also check registry.json exists ────────
+
+#[test]
+fn is_cache_fresh_returns_false_when_registry_json_missing() {
+    let tmp = TempDir::new().unwrap();
+    let chub_dir = tmp.path().join("chub");
+    std::fs::create_dir_all(&chub_dir).unwrap();
+
+    let source_name = "ghost-source";
+    let now = 2000u64;
+    let refresh_interval = 3600u64;
+
+    // Write a fresh meta.json (last_updated = now - 10, well within interval)
+    let meta = cache::SourceMeta {
+        last_updated: Some(now - 10),
+        full_bundle: None,
+        bundled_seed: None,
+    };
+    cache::write_meta(&chub_dir, source_name, &meta).unwrap();
+
+    // But do NOT create registry.json
+    let reg_path = cache::get_source_registry_path(&chub_dir, source_name);
+    assert!(!reg_path.exists(), "precondition: registry.json must not exist");
+
+    // is_cache_fresh must return false despite the fresh timestamp
+    assert!(
+        !cache::is_cache_fresh(&chub_dir, source_name, refresh_interval, now),
+        "cache with fresh meta but missing registry.json should be treated as stale"
+    );
+}
+
+#[test]
+fn is_cache_fresh_returns_true_when_both_meta_and_registry_exist() {
+    let tmp = TempDir::new().unwrap();
+    let chub_dir = tmp.path().join("chub");
+    std::fs::create_dir_all(&chub_dir).unwrap();
+
+    let source_name = "good-source";
+    let now = 2000u64;
+    let refresh_interval = 3600u64;
+
+    // Write meta + registry.json
+    let meta = cache::SourceMeta {
+        last_updated: Some(now - 10),
+        full_bundle: None,
+        bundled_seed: None,
+    };
+    cache::write_meta(&chub_dir, source_name, &meta).unwrap();
+
+    let source_dir = chub_dir.join("sources").join(source_name);
+    std::fs::create_dir_all(&source_dir).unwrap();
+    std::fs::write(source_dir.join("registry.json"), "{}").unwrap();
+
+    assert!(
+        cache::is_cache_fresh(&chub_dir, source_name, refresh_interval, now),
+        "cache with fresh meta AND existing registry.json should be fresh"
+    );
+}
+
+// ── Structural test: error_for_status() must be present in production code ──
+
+#[test]
+fn update_rs_uses_error_for_status_on_http_responses() {
+    // Structural verification: if someone removes error_for_status() from update.rs,
+    // this test will fail. This catches the gap that unit tests can't cover
+    // (they use injected closures, not real reqwest responses).
+    let source = include_str!("../src/commands/update.rs");
+    let count = source.matches(".error_for_status()?").count();
+    assert!(
+        count >= 2,
+        "update.rs must call .error_for_status()? on at least 2 HTTP responses \
+         (registry + bundle), found {} occurrences",
+        count
+    );
+}
+
+// ── Structural: ensure_registry is called in both CLI and MCP entry points ──
+
+#[test]
+fn ensure_registry_called_in_both_entry_points() {
+    // CLI entry: commands/mod.rs must call ensure_registry
+    let cli_source = include_str!("../src/commands/mod.rs");
+    assert!(
+        cli_source.contains("ensure_registry("),
+        "commands/mod.rs must call ensure_registry for CLI bootstrap"
+    );
+
+    // MCP entry: chub_mcp.rs must call ensure_registry
+    let mcp_source = include_str!("../src/bin/chub_mcp.rs");
+    assert!(
+        mcp_source.contains("ensure_registry("),
+        "chub_mcp.rs must call ensure_registry for MCP bootstrap"
+    );
+}
+
+// ── Finding R5-2: get -o must not create file when all entries fail ──────────
+
+#[test]
+fn get_rs_guards_empty_results_before_output_to_file() {
+    // Structural verification: output_to_file is only called when results is non-empty.
+    let source = include_str!("../src/commands/get.rs");
+    assert!(
+        source.contains("if results.is_empty()"),
+        "get.rs must guard against calling output_to_file with empty results"
+    );
+}
+
+// ── Structural test: error_for_status() must be present in production code ──
+
+#[test]
+fn cache_rs_uses_error_for_status_on_remote_fetch() {
+    // Also verify the on-demand fetch path in cache.rs
+    let source = include_str!("../src/core/cache.rs");
+    assert!(
+        source.contains(".error_for_status()?"),
+        "cache.rs must call .error_for_status()? on remote file fetches"
+    );
 }

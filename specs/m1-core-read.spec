@@ -18,7 +18,10 @@ inherits: chub-rs
 - doc 的默认版本取 `recommendedVersion`；显式 `--version` 时必须严格匹配版本字符串。
 - `get --file` 只允许获取条目声明过的文件列表中的路径，不做模糊匹配。
 - `get --file` 在查找文件前必须先拒绝绝对路径、`..` 片段和规范化后越出条目根目录的路径。
-- 远端 doc 的读取顺序为：local source -> 本地缓存 -> npm bundle/dist -> 远端下载。
+- 远端 doc 的读取顺序为：local source -> 本地缓存 -> 远端下载。
+  （chub-rs 不实现 npm bundled dist 兜底路径，这是 JS 特有的包分发机制。）
+- `get -o` 多 ID 时合并所有内容用 `\n\n---\n\n` 分隔写入单文件；`-o dir/` 结尾时逐个写 `<dir>/<id>.md`。
+- `get --full -o <dir>` 单 entry 直接写到 output 目录；多 entry 才嵌套 `<output>/<id>/`。
 - 搜索优先使用预构建 BM25 index；缺失 index 时退回关键字打分搜索。
 
 ## 边界
@@ -105,6 +108,24 @@ inherits: chub-rs
   假设 两个 source 都声明了 `openai/chat`
   当 运行 `chub get openai/chat`
   那么 命令失败，并列出 `source:id` 形式的可选项
+
+场景: `-o` 写文件且 JSON 模式返回 metadata 不含 content
+  测试: get_output_flag_writes_file_not_stdout
+  假设 `acme/widgets` 的缓存内容已就绪
+  当 运行 `chub get acme/widgets --lang js -o out.md --json`
+  那么 文件 `out.md` 包含 doc 内容，JSON 输出包含 `{id, type, path}` 而不含 `content` 字段
+
+场景: 多 ID `-o` 合并内容写入单文件
+  测试: get_multi_id_output_combines_content
+  假设 `acme/widgets` 和 `testskills/deploy` 的缓存内容已就绪
+  当 运行 `chub get acme/widgets testskills/deploy --lang js -o combined.md`
+  那么 `combined.md` 包含两个条目的内容，用 `---` 分隔，而不是只有最后一个条目
+
+场景: 单 entry `--full -o` 直接写到输出目录
+  测试: get_full_output_single_entry_writes_directly_to_dir
+  假设 `acme/widgets` 包含 `DOC.md` 和 `references/advanced.md`
+  当 运行 `chub get acme/widgets --lang js --full -o output/`
+  那么 文件直接写到 `output/` 目录，不嵌套 `output/acme/widgets/` 子目录
 
 场景: JSON 输出按需包含注解和附加文件字段
   测试: get_json_includes_optional_annotation_and_additional_files

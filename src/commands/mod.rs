@@ -119,21 +119,38 @@ fn epoch_now() -> u64 {
         .as_secs()
 }
 
+/// Info about a source needed for content resolution.
+#[derive(Debug, Clone, Default)]
+pub struct SourceInfo {
+    pub path: Option<std::path::PathBuf>,
+    pub url: Option<String>,
+}
+
 /// Load the merged registry from all configured sources.
-/// Returns (MergedRegistry, source_paths) where source_paths maps source name to local path.
+/// Calls `ensure_registry` first to bootstrap/refresh remote registries.
+/// Returns (MergedRegistry, source_info) where source_info maps source name to SourceInfo.
 fn load_merged_registry() -> Result<(
     registry::MergedRegistry,
-    std::collections::HashMap<String, Option<std::path::PathBuf>>,
+    std::collections::HashMap<String, SourceInfo>,
 )> {
     let chub_dir = config::get_chub_dir();
     let cfg = config::load_config_inner(&chub_dir);
 
+    // Bootstrap: ensure at least one registry is available (best-effort)
+    crate::core::cache::ensure_registry(&chub_dir, &cfg.sources, cfg.refresh_interval);
+
     let mut source_data = Vec::new();
-    let mut source_paths = std::collections::HashMap::new();
+    let mut source_info = std::collections::HashMap::new();
 
     for source in &cfg.sources {
-        // Track source local paths for content resolution
-        source_paths.insert(source.name.clone(), source.path.clone());
+        // Track source info for content resolution
+        source_info.insert(
+            source.name.clone(),
+            SourceInfo {
+                path: source.path.clone(),
+                url: source.url.clone(),
+            },
+        );
 
         // For local sources, read registry directly from source.path (no cache fallback)
         if let Some(ref local_path) = source.path {
@@ -156,7 +173,7 @@ fn load_merged_registry() -> Result<(
         }
     }
 
-    Ok((registry::merge_registries(&source_data), source_paths))
+    Ok((registry::merge_registries(&source_data), source_info))
 }
 
 /// Dispatch the parsed CLI to the appropriate command handler.
@@ -174,7 +191,7 @@ pub fn run(cli: Cli) -> Result<()> {
             search::run(args, &merged, json)
         }
         Some(Command::Get(ref args)) => {
-            let (merged, source_paths) = load_merged_registry()?;
+            let (merged, source_info) = load_merged_registry()?;
             let chub_dir = config::get_chub_dir();
             let annotations_dir = annotations::get_annotations_dir();
             get::run(
@@ -182,7 +199,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 &merged,
                 &chub_dir,
                 &annotations_dir,
-                &source_paths,
+                &source_info,
                 json,
             )
         }

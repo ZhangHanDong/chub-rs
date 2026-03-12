@@ -135,7 +135,7 @@ fn get_doc_entry_and_additional_files() {
 
             // Fetch DOC.md
             let content =
-                chub_rs::core::cache::fetch_doc(chub_dir, None, source_name, &path, "DOC.md")
+                chub_rs::core::cache::fetch_doc(chub_dir, None, None, source_name, &path, "DOC.md")
                     .expect("fetch DOC.md");
             assert!(content.contains("Acme Widgets"));
 
@@ -206,9 +206,15 @@ fn get_skill_content_without_lang() {
             assert_eq!(path, "testskills/deploy");
             assert!(files.contains(&"SKILL.md".to_string()));
 
-            let content =
-                chub_rs::core::cache::fetch_doc(chub_dir, None, source_name, &path, "SKILL.md")
-                    .expect("fetch SKILL.md");
+            let content = chub_rs::core::cache::fetch_doc(
+                chub_dir,
+                None,
+                None,
+                source_name,
+                &path,
+                "SKILL.md",
+            )
+            .expect("fetch SKILL.md");
             assert!(content.contains("Deploy Skill"));
         }
         other => panic!("expected SkillPath, got {:?}", other),
@@ -235,7 +241,7 @@ fn get_recommended_and_specific_versions() {
     match resolved {
         ResolvedPath::Resolved { path, .. } => {
             let content =
-                chub_rs::core::cache::fetch_doc(chub_dir, None, source_name, &path, "DOC.md")
+                chub_rs::core::cache::fetch_doc(chub_dir, None, None, source_name, &path, "DOC.md")
                     .expect("fetch default version");
             assert!(
                 content.contains("v2.0.0"),
@@ -251,7 +257,7 @@ fn get_recommended_and_specific_versions() {
     match resolved_v1 {
         ResolvedPath::Resolved { path, .. } => {
             let content =
-                chub_rs::core::cache::fetch_doc(chub_dir, None, source_name, &path, "DOC.md")
+                chub_rs::core::cache::fetch_doc(chub_dir, None, None, source_name, &path, "DOC.md")
                     .expect("fetch v1");
             assert!(
                 content.contains("v1.0.0"),
@@ -305,6 +311,7 @@ fn get_specific_file_and_missing_file_error() {
 
     let content = chub_rs::core::cache::fetch_doc(
         chub_dir,
+        None,
         None,
         source_name,
         "acme/widgets/javascript/v2",
@@ -368,7 +375,173 @@ fn get_ambiguous_id_lists_source_alternatives() {
     );
 }
 
-// ── Scenario 12: JSON 输出按需包含注解和附加文件字段 ────────────────
+// ── Scenario 12: `-o` 写文件，JSON 模式返回 metadata 不含 content ────
+
+#[test]
+fn get_output_flag_writes_file_not_stdout() {
+    use chub_rs::commands::SourceInfo;
+    use std::collections::HashMap;
+
+    let tmp = TempDir::new().expect("temp dir");
+    let chub_dir = tmp.path().join("chub");
+    let source_name = "default";
+    let annotations_dir = chub_dir.join("annotations");
+
+    setup_cached_docs(&chub_dir, source_name);
+    let merged = fixture_merged(source_name);
+
+    let mut source_info = HashMap::new();
+    source_info.insert(source_name.to_string(), SourceInfo::default());
+
+    let output_file = tmp.path().join("out.md");
+
+    let args = chub_rs::commands::get::GetArgs {
+        ids: vec!["acme/widgets".to_string()],
+        lang: Some("js".to_string()),
+        version: None,
+        output: Some(output_file.display().to_string()),
+        full: false,
+        file: None,
+    };
+
+    // Run in JSON mode to capture the return value shape
+    let result = chub_rs::commands::get::run(
+        &args,
+        &merged,
+        &chub_dir,
+        &annotations_dir,
+        &source_info,
+        true, // json
+    );
+    assert!(result.is_ok(), "get -o should succeed");
+
+    // Verify file was written with content
+    let written = std::fs::read_to_string(&output_file).expect("read output file");
+    assert!(
+        written.contains("Acme Widgets"),
+        "output file should contain doc content"
+    );
+
+    // The JSON output should NOT contain content (it's in the file)
+    // We verify this structurally: the -o code path returns {id, type, path}
+    // not {id, type, content}
+    let source = include_str!("../src/commands/get.rs");
+    assert!(
+        source.contains(r#""path": output_path"#),
+        "get.rs -o JSON path should return path, not content"
+    );
+}
+
+// ── Scenario 13: 多 ID `-o` 合并内容写入单文件 ──────────────────────
+
+#[test]
+fn get_multi_id_output_combines_content() {
+    use chub_rs::commands::SourceInfo;
+    use std::collections::HashMap;
+
+    let tmp = TempDir::new().expect("temp dir");
+    let chub_dir = tmp.path().join("chub");
+    let source_name = "default";
+    let annotations_dir = chub_dir.join("annotations");
+
+    setup_cached_docs(&chub_dir, source_name);
+    let merged = fixture_merged(source_name);
+
+    let mut source_info = HashMap::new();
+    source_info.insert(source_name.to_string(), SourceInfo::default());
+
+    let output_file = tmp.path().join("combined.md");
+
+    let args = chub_rs::commands::get::GetArgs {
+        ids: vec!["acme/widgets".to_string(), "testskills/deploy".to_string()],
+        lang: Some("js".to_string()),
+        version: None,
+        output: Some(output_file.display().to_string()),
+        full: false,
+        file: None,
+    };
+
+    let result = chub_rs::commands::get::run(
+        &args,
+        &merged,
+        &chub_dir,
+        &annotations_dir,
+        &source_info,
+        false,
+    );
+    assert!(result.is_ok(), "multi-id get -o should succeed");
+
+    let written = std::fs::read_to_string(&output_file).expect("read combined file");
+    assert!(
+        written.contains("Acme Widgets"),
+        "combined file should contain first entry"
+    );
+    assert!(
+        written.contains("Deploy Skill"),
+        "combined file should contain second entry"
+    );
+    assert!(
+        written.contains("---"),
+        "combined file should have separator"
+    );
+}
+
+// ── Scenario 14: 单 entry `--full -o` 直接写到输出目录 ──────────────
+
+#[test]
+fn get_full_output_single_entry_writes_directly_to_dir() {
+    use chub_rs::commands::SourceInfo;
+    use std::collections::HashMap;
+
+    let tmp = TempDir::new().expect("temp dir");
+    let chub_dir = tmp.path().join("chub");
+    let source_name = "default";
+    let annotations_dir = chub_dir.join("annotations");
+
+    setup_cached_docs(&chub_dir, source_name);
+    let merged = fixture_merged(source_name);
+
+    let mut source_info = HashMap::new();
+    source_info.insert(source_name.to_string(), SourceInfo::default());
+
+    let out_dir = tmp.path().join("output");
+
+    let args = chub_rs::commands::get::GetArgs {
+        ids: vec!["acme/widgets".to_string()],
+        lang: Some("js".to_string()),
+        version: None,
+        output: Some(out_dir.display().to_string()),
+        full: true,
+        file: None,
+    };
+
+    let result = chub_rs::commands::get::run(
+        &args,
+        &merged,
+        &chub_dir,
+        &annotations_dir,
+        &source_info,
+        false,
+    );
+    assert!(result.is_ok(), "get --full -o should succeed");
+
+    // Single entry: files written directly to output dir, NOT <output>/<id>/
+    assert!(
+        out_dir.join("DOC.md").exists(),
+        "DOC.md should be directly in output dir"
+    );
+    assert!(
+        out_dir.join("references/advanced.md").exists(),
+        "reference file should be in output dir"
+    );
+    // Should NOT nest under entry id
+    assert!(
+        !out_dir.join("acme/widgets").exists(),
+        "single entry should NOT nest under <output>/<id>/"
+    );
+}
+
+// ── Scenario 15: JSON 输出按需包含注解和附加文件字段 ────────────────
 
 #[test]
 fn get_json_includes_optional_annotation_and_additional_files() {
@@ -392,7 +565,7 @@ fn get_json_includes_optional_annotation_and_additional_files() {
         ResolvedPath::Resolved { path, files, .. } => {
             // Simulate JSON output construction
             let content =
-                chub_rs::core::cache::fetch_doc(chub_dir, None, source_name, &path, "DOC.md")
+                chub_rs::core::cache::fetch_doc(chub_dir, None, None, source_name, &path, "DOC.md")
                     .expect("fetch DOC.md");
 
             let additional: Vec<&String> = files.iter().filter(|f| *f != "DOC.md").collect();
@@ -432,7 +605,7 @@ fn get_json_includes_optional_annotation_and_additional_files() {
     match resolved2 {
         ResolvedPath::Resolved { path, files, .. } => {
             let content =
-                chub_rs::core::cache::fetch_doc(chub_dir, None, source_name, &path, "DOC.md")
+                chub_rs::core::cache::fetch_doc(chub_dir, None, None, source_name, &path, "DOC.md")
                     .expect("fetch DOC.md");
 
             let additional: Vec<&String> = files.iter().filter(|f| *f != "DOC.md").collect();

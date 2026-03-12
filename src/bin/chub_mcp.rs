@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::io::Write;
 
+use chub_rs::commands::SourceInfo;
+
 fn main() {
     // Redirect all stderr output for diagnostics
     let _ = writeln!(
@@ -13,12 +15,21 @@ fn main() {
     let chub_dir = chub_rs::core::config::get_chub_dir();
     let cfg = chub_rs::core::config::load_config_inner(&chub_dir);
 
+    // Bootstrap: ensure at least one registry is available
+    chub_rs::core::cache::ensure_registry(&chub_dir, &cfg.sources, cfg.refresh_interval);
+
     let mut source_data = Vec::new();
-    let mut source_paths = HashMap::new();
+    let mut source_info_map: HashMap<String, SourceInfo> = HashMap::new();
 
     for source in &cfg.sources {
-        // Track source local paths
-        source_paths.insert(source.name.clone(), source.path.clone());
+        // Track source info (path + url)
+        source_info_map.insert(
+            source.name.clone(),
+            SourceInfo {
+                path: source.path.clone(),
+                url: source.url.clone(),
+            },
+        );
 
         // For local sources, read registry directly from source.path (no cache fallback)
         if let Some(ref local_path) = source.path {
@@ -53,7 +64,7 @@ fn main() {
         search_index,
         chub_dir,
         annotations_dir,
-        source_paths,
+        source_info: source_info_map,
         telemetry_enabled,
         feedback_endpoint: cfg.telemetry_url.clone(),
         version: env!("CARGO_PKG_VERSION").to_string(),

@@ -9,6 +9,7 @@ pub mod protocol;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::commands::SourceInfo;
 use crate::core::bm25::SearchIndex;
 use crate::core::registry::Entry;
 
@@ -18,8 +19,8 @@ pub struct McpContext {
     pub search_index: Option<SearchIndex>,
     pub chub_dir: PathBuf,
     pub annotations_dir: PathBuf,
-    /// source_name -> optional local path
-    pub source_paths: HashMap<String, Option<PathBuf>>,
+    /// source_name -> SourceInfo (path + url)
+    pub source_info: HashMap<String, SourceInfo>,
     pub telemetry_enabled: bool,
     pub feedback_endpoint: String,
     pub version: String,
