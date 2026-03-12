@@ -85,6 +85,26 @@
 - Expected wallclock: `4.0 - 5.5 hours`
 - Coordination cost rises sharply after 3 agents because `m1`/`m2`/`m4` share runtime contracts.
 
+## Why Agent Wallclock ≠ Calendar Time
+
+The estimated `8.5 - 11.3 hours` is **agent continuous execution time** — the sum of all
+tool-call rounds if an agent ran non-stop. The recommended `2 weeks` accounts for:
+
+1. **Human review checkpoints** are on the critical path. Each milestone (m0→m1→m2→m4)
+   requires human contract acceptance: freeze JSON shapes, confirm parity, approve decisions.
+   These cannot be automated.
+2. **Agent coordination overhead**. With 2 agents, one may block waiting for the other's
+   output contracts to stabilize (e.g., Agent B can't start `m4` until Agent A's `m1` lib
+   layer is reviewed and frozen).
+3. **Review finding loops**. Code review surfaces behavioral gaps not caught by tests.
+   Each finding round adds spec updates, code fixes, new tests, and re-verification —
+   typically 1-3 hours of agent work per round, plus human review time.
+4. **Non-contiguous execution**. Agents don't run 11 hours straight. Sessions are
+   interrupted by human availability, context switches, and overnight gaps.
+
+**Rule of thumb**: `calendar days ≈ agent wallclock hours × 2-3` for a project with
+review checkpoints and multi-agent coordination.
+
 ## Recommended Plan
 
 - Default recommendation: `2 agents`, `2 weeks`
